@@ -1,0 +1,20 @@
+# Target-specific data
+base.apk
+good_devices.json
+devices_converted.json
+devices_bmp_sample.json
+working_devices.json
+
+# Conversion scripts
+device_sort.go
+device_convert.go
+convert_devices.py
+
+# Go build
+*.exe
+*.dll
+*.so
+*.dylib
+
+# OS
+.DS_Store

@@ -11,8 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"hash/crc32"
-	"math"
 	mrand "math/rand"
 	"strings"
 	"time"
@@ -54,7 +52,7 @@ TKAjPiWmEBvcpnPPMjr5fGgv0w6+KM9DLTxcktThPZAGoVcoyM/cTO/YsAMIxlmT
 zpXBaxddHRwi8S2NvwIDAQAB
 -----END PUBLIC KEY-----`
 
-// Generator324 creates v3.2.4-rc3 sensors (Panera format)
+// Generator324 creates v3.2.4-rc3 sensors
 type Generator324 struct {
 	Device    *Device
 	PackageID string
@@ -62,6 +60,7 @@ type Generator324 struct {
 	aesKey    []byte
 	hmacKey   []byte
 	rsaPubKey *rsa.PublicKey
+	dct       *DCTEncoder
 }
 
 func NewGenerator324(device *Device, packageID string) *Generator324 {
@@ -82,6 +81,7 @@ func NewGenerator324(device *Device, packageID string) *Generator324 {
 		aesKey:    aesKey,
 		hmacKey:   hmacKey,
 		rsaPubKey: rsaPub,
+		dct:       NewDCTEncoder(),
 	}
 }
 
@@ -97,7 +97,7 @@ func (g *Generator324) Generate() (string, string, error) {
 func (g *Generator324) buildSensorData() string {
 	// Sample counts must be power of 2: 4, 8, 16, 32, 64
 	// Real app uses 2,8 for quick/fresh sensor (immediate login)
-	orientSamples := 8 // Not 4
+	orientSamples := 8
 	motionSamples := 16
 
 	orientationDCT, orientationSum := g.generateOrientationDCT(orientSamples)
@@ -134,7 +134,6 @@ func (g *Generator324) buildSensorData() string {
 	sb.WriteString("-1,2,-94,-150,1,0") // New in 3.2.4
 
 	return sb.String()
-
 }
 
 func (g *Generator324) getSystemInfo() string {
@@ -178,7 +177,7 @@ func (g *Generator324) generateOrientationDCT(samples int) (string, int64) {
 		for i := 0; i < samples; i++ {
 			values[i] = base + float32(mrand.Float64()*0.5-0.25)
 		}
-		encoded, sum := encodeDCT(values)
+		encoded, sum := g.dct.EncodeSensorData(values, 0)
 		parts = append(parts, encoded)
 		totalSum += sum
 	}
@@ -211,7 +210,7 @@ func (g *Generator324) generateMotionDCT(samples int) (string, int64) {
 		for i := 0; i < samples; i++ {
 			values[i] = base + float32(mrand.Float64()*0.1-0.05)
 		}
-		encoded, sum := encodeDCT(values)
+		encoded, sum := g.dct.EncodeSensorData(values, 0)
 		parts = append(parts, encoded)
 		totalSum += sum
 	}
@@ -229,19 +228,16 @@ func (g *Generator324) generateTimeDCT(samples int) string {
 			values[i] = float32(100 + mrand.Intn(150))
 		}
 	}
-	encoded, _ := encodeDCT(values)
+	encoded, _ := g.dct.EncodeSensorData(values, 0)
 	return encoded
 }
 
 // getVerifyStats builds -115 section
-// Real format: 0,0,orientSum,motionSum,totalSum,elapsedMs,0,0,orientSamples,motionSamples,2000,buildTime,1,feistel,startTimestamp
 func (g *Generator324) getVerifyStats(orientationSum, motionSum int64, orientSamples, motionSamples int) string {
 	totalSum := orientationSum + motionSum
-	elapsedMs := mrand.Intn(2000) + 1500   // 1500-3500ms (real: ~2164)
-	buildTime := mrand.Intn(20000) + 25000 // 25000-45000 microseconds (real: ~34000)
+	elapsedMs := mrand.Intn(2000) + 1500   // 1500-3500ms
+	buildTime := mrand.Intn(20000) + 25000 // 25000-45000 microseconds
 
-	// Feistel computation from JADX:
-	// g.c((int)elapsed, (totalSum << 32) | ((textCount + touchCount + orientSamples + motionSamples) & 0xFFFFFFFF))
 	combined := (totalSum << 32) | (int64(orientSamples+motionSamples) & 0xFFFFFFFF)
 	feistel := computeFeistel(elapsedMs, combined)
 
@@ -251,22 +247,20 @@ func (g *Generator324) getVerifyStats(orientationSum, motionSum int64, orientSam
 }
 
 func (g *Generator324) getPerfStats() string {
-	// From real capture: 17,1297,59,1666,126700,1275,33400,333,64354
-
 	if len(g.Device.PerfBench) > 0 {
 		return g.Device.PerfBench[mrand.Intn(len(g.Device.PerfBench))]
 	}
 
 	return fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d,%d",
-		mrand.Intn(20)+10,       // 10-30
-		mrand.Intn(1000)+400,    // 400-1400
-		mrand.Intn(80)+40,       // 40-120
-		mrand.Intn(1200)+600,    // 600-1800
-		mrand.Intn(80000)+60000, // 60000-140000
-		mrand.Intn(1000)+400,    // 400-1400
-		mrand.Intn(20000)+20000, // 20000-40000
-		mrand.Intn(300)+150,     // 150-450
-		mrand.Intn(40000)+40000) // 40000-80000
+		mrand.Intn(20)+10,
+		mrand.Intn(1000)+400,
+		mrand.Intn(80)+40,
+		mrand.Intn(1200)+600,
+		mrand.Intn(80000)+60000,
+		mrand.Intn(1000)+400,
+		mrand.Intn(20000)+20000,
+		mrand.Intn(300)+150,
+		mrand.Intn(40000)+40000)
 }
 
 func (g *Generator324) getBackgroundEvents() string {
@@ -274,7 +268,6 @@ func (g *Generator324) getBackgroundEvents() string {
 	t1 := ts + mrand.Int63n(200) + 50
 	t2 := t1 + mrand.Int63n(2000) + 1000
 
-	// Sometimes only 2 events
 	if mrand.Float32() < 0.3 {
 		return fmt.Sprintf("3,%d;2,%d;", t1, t2)
 	}
@@ -301,8 +294,7 @@ func (g *Generator324) encrypt(plaintext string) (string, error) {
 	encAES, _ := rsa.EncryptPKCS1v15(rand.Reader, g.rsaPubKey, g.aesKey)
 	encHMAC, _ := rsa.EncryptPKCS1v15(rand.Reader, g.rsaPubKey, g.hmacKey)
 
-	// Real app format ends with $$ (from HTTP capture)
-	aesTime := (mrand.Intn(3) + 1) * 1000 // 1000, 2000, or 3000
+	aesTime := (mrand.Intn(3) + 1) * 1000
 
 	return fmt.Sprintf("2,a,%s,%s$%s$%d,0,0$$",
 		base64.StdEncoding.EncodeToString(encAES),
@@ -318,13 +310,12 @@ func computeFeistel(elapsed int, combined int64) int64 {
 		shift := i % 32
 		rotated := (elapsed << shift) | (elapsed >> (32 - shift))
 		if shift == 0 {
-			rotated = elapsed // No rotation needed
+			rotated = elapsed
 		}
 		newLeft := right ^ (int32(rotated) ^ left)
 		right = left
 		left = newLeft
 	}
-	// Return as unsigned
 	return int64(uint64(uint32(right))<<32 | uint64(uint32(left)))
 }
 
@@ -336,77 +327,6 @@ func ab(s string) int {
 		}
 	}
 	return sum
-}
-
-func encodeDCT(values []float32) (string, int64) {
-	if len(values) == 0 {
-		return "", 0
-	}
-
-	minVal, maxVal := values[0], values[0]
-	for _, v := range values[1:] {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	var sb strings.Builder
-	bucketSize := (maxVal - minVal) / 60.0
-
-	for _, v := range values {
-		var c byte
-		if bucketSize == 0 || v == maxVal {
-			c = '}'
-		} else {
-			bucket := int(math.Floor(float64((v - minVal) / bucketSize)))
-			if bucket > 59 {
-				bucket = 59
-			}
-			c = byte(65 + bucket)
-		}
-		if c == '\\' {
-			c = '.'
-		} else if c == '.' {
-			c = '\\'
-		}
-		sb.WriteByte(c)
-	}
-
-	quantized := sb.String()
-	encoded := runLengthEncode(quantized)
-	checksum := int64(crc32.ChecksumIEEE([]byte(encoded)))
-
-	minRound := float32(math.Round(float64(minVal)*100) / 100)
-	maxRound := float32(math.Round(float64(maxVal)*100) / 100)
-
-	return fmt.Sprintf("2;%.2f;%.2f;%d;%s", minRound, maxRound, checksum, encoded),
-		checksum + int64(math.Round(float64(minVal)*100)) + int64(math.Round(float64(maxVal)*100))
-}
-
-func runLengthEncode(s string) string {
-	if len(s) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		count := 1
-		j := i + 1
-		for j < len(s) && s[j] == c {
-			count++
-			j++
-		}
-		if count > 1 {
-			sb.WriteString(fmt.Sprintf("%d", count))
-		}
-		sb.WriteByte(c)
-		i = j
-	}
-	return sb.String()
 }
 
 func pkcs7Pad(data []byte, blockSize int) []byte {

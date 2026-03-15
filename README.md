@@ -23,7 +23,7 @@ curl -X POST http://localhost:1337/akamai/bmp \
 ## Structure
 
 ```
-├── v324/
+├── akamai/
 │   ├── gen.go      # sensor generator
 │   └── dct.go      # DCT encoding
 ├── devices.json    # device fingerprints

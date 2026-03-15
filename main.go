@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	bmp324 "bmp/v324"
+	bmp324 "bmp/akamai"
 )
 
 type AkamaiRequest struct {
@@ -91,13 +91,6 @@ func getStringDefault(m map[string]interface{}, key, def string) string {
 func getInt(m map[string]interface{}, key string, def int) int {
 	if v, ok := m[key].(float64); ok {
 		return int(v)
-	}
-	return def
-}
-
-func getFloat(m map[string]interface{}, key string, def float64) float64 {
-	if v, ok := m[key].(float64); ok {
-		return v
 	}
 	return def
 }
